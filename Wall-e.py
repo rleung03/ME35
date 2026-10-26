@@ -5,6 +5,145 @@ import random
 import neopixel
 from machine import ADC
 
+import urequests
+import network
+import ubinascii
+import walle_secrets   # SSID, PASSWORD, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN
+
+# establish wifi connection
+def connect_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if not wlan.isconnected():
+        print("Connecting to WiFi...")
+        wlan.connect(walle_secrets.SSID, walle_secrets.PASSWORD)
+        while not wlan.isconnected():
+            time.sleep(0.5)
+    print("Connected! IP address:", wlan.ifconfig()[0])
+    return wlan
+
+connect_wifi()
+
+# SPOTIFY
+TOKEN_URL = "https://accounts.spotify.com/api/token"
+PLAY_URL = "https://api.spotify.com/v1/me/player/play"
+PLAYLIST_URI = "spotify:playlist:1rA6M7mWmRNV2L2ZlcUzmu"   # the playlist to play
+DEVICES_URL = "https://api.spotify.com/v1/me/player/devices"
+DEVICE_NAME = "Rachel\u2019s MacBook Air"   # name your computer shows in Spotify's device list
+PAUSE_URL = "https://api.spotify.com/v1/me/player/pause"
+NEXT_URL = "https://api.spotify.com/v1/me/player/next"
+current_device_id = None   # filled in when the music starts
+
+# Basic auth for the token request: base64("client_id:client_secret")
+basic = ubinascii.b2a_base64("{}:{}".format(walle_secrets.CLIENT_ID, walle_secrets.CLIENT_SECRET)).decode().strip()
+
+access_token = None   # short-lived, so we get a fresh one each time we need it
+
+def get_token():
+    # trade the long-lived refresh token for a new access token
+    global access_token
+    headers = {'Authorization': 'Basic ' + basic,
+               'Content-Type': 'application/x-www-form-urlencoded'}
+    body = "grant_type=refresh_token&refresh_token=" + walle_secrets.REFRESH_TOKEN
+    try:
+        r = urequests.post(TOKEN_URL, headers=headers, data=body)
+    except OSError as e:
+        print("Token request failed:", e)
+        return False
+    try:
+        if r.status_code != 200:
+            print("Token status", r.status_code, r.text[:200])
+            return False
+        access_token = r.json()["access_token"]
+        return True
+    finally:
+        r.close()
+
+def get_device_id():
+    # look up the id of the device named DEVICE_NAME
+    headers = {'Authorization': 'Bearer ' + access_token}
+    try:
+        r = urequests.get(DEVICES_URL, headers=headers)
+    except OSError as e:
+        print("Device request failed:", e)
+        return None
+    try:
+        if r.status_code != 200:
+            print("Devices status", r.status_code, r.text[:200])
+            return None
+        names = []
+        for d in r.json()["devices"]:
+            names.append(d["name"])
+            if d["name"] == DEVICE_NAME:
+                return d["id"]
+        print("Device not found. Spotify sees:", names)
+        return None
+    finally:
+        r.close()
+
+def start_music():
+    # tell Spotify to start the playlist on the computer
+    global current_device_id
+    if not get_token():
+        return
+    device_id = get_device_id()
+    if device_id is None:
+        return
+    current_device_id = device_id   # remember it for pause and skip
+    url = PLAY_URL + "?device_id=" + device_id
+    headers = {'Authorization': 'Bearer ' + access_token,
+               'Content-Type': 'application/json'}
+    body = '{"context_uri": "' + PLAYLIST_URI + '"}'
+    try:
+        r = urequests.put(url, headers=headers, data=body)
+    except OSError as e:
+        print("Play request failed:", e)
+        return
+    try:
+        if r.status_code in (200, 202, 204):
+            print("Music started")
+        elif r.status_code == 404:
+            print("No active device: open Spotify on your phone or computer first")
+        elif r.status_code == 403:
+            print("Not allowed: needs Premium and the playback permission", r.text[:200])
+        else:
+            print("Status", r.status_code, r.text[:200])
+    finally:
+        r.close()
+
+
+def player_command(method, url):
+    # send a pause or skip command to Spotify
+    headers = {'Authorization': 'Bearer ' + access_token,
+               'Content-Length': '0'}   # Spotify wants this on requests with no body
+    try:
+        if method == "PUT":
+            r = urequests.put(url, headers=headers)
+        else:
+            r = urequests.post(url, headers=headers)
+    except OSError as e:
+        print("Command failed:", e)
+        return
+    try:
+        if r.status_code not in (200, 202, 204):
+            print("Status", r.status_code, r.text[:200])
+    finally:
+        r.close()
+
+def pause_music():
+    if current_device_id is None:
+        return
+    get_token()   # fresh token in case the study session was long
+    player_command("PUT", PAUSE_URL + "?device_id=" + current_device_id)
+    print("Music paused")
+
+def skip_song():
+    if current_device_id is None:
+        return
+    player_command("POST", NEXT_URL + "?device_id=" + current_device_id)
+    print("Skipped")
+
+
 # define neck movements
 neck = PWM(Pin(4), freq=50, duty_u16=0)
 deg2serv = 65535/20 # Converts from .5 - 2.5 in a 0 - 180 deg range
@@ -41,14 +180,20 @@ look_front()
 
 # neopixel
 lights = neopixel.NeoPixel(Pin(15),2)
-def lights_on():
-    lights[0] = (20,0,20) # set the color of 0th light to purple
-    lights[1] = (0, 128, 20) # teal (some green + some blue)
-    lights.write()
     
 def lights_off():
     lights[0] = (0, 0, 0)
     lights[1] = (0, 0, 0)
+    lights.write()
+
+def study_light():
+    lights[0] = (255,170,0)  
+    lights[1] = (255, 90, 0) 
+    lights.write()
+    
+def break_light():
+    lights[0] = (100,8,40)  
+    lights[1] = (0, 100, 75) 
     lights.write()
     
 def red_light():
@@ -66,7 +211,6 @@ joy_x.atten(ADC.ATTN_11DB)   # lets it read the full 0-3.3V range
 joy_y.atten(ADC.ATTN_11DB)
 
     
-
 # initialize buttons
 decision_pin = Pin(34, Pin.IN) # input only pin so don't need pull-up
 study_pin = Pin(35, Pin.IN)
@@ -100,13 +244,25 @@ def study_mode():
     last_happy = start
     happy_interval = random.randint(2,8)
     print("Study started: Focus for 30 minutes!")
+    start_music()   # music begins as soon as study mode starts
+    study_light()
+    # wait for the stick to come back to center (the push that started study mode)
+    while not (30000 <= joy_x.read_u16() <= 40000):
+        time.sleep_ms(10)
     while time.ticks_diff(time.ticks_ms(), start) < STUDY_TIMER * 1000:
+        # push the stick right to skip the song
+        if 40000 < joy_x.read_u16() < 60000:
+            skip_song()
+            # wait for the stick to return to center so one push = one skip
+            while not (30000 <= joy_x.read_u16() <= 40000):
+                time.sleep_ms(10)
         if time.ticks_diff(time.ticks_ms(), last_happy) > happy_interval * 1000:
             happy()
             last_happy = time.ticks_ms()
             happy_interval = random.randint(2,8)
         time.sleep_ms(10)
-    lights_on()
+    pause_music()   # music stops when the break starts
+    break_light()
     time.sleep(2)
     print("10 minute break!")
     time.sleep(BREAK_TIMER)
@@ -124,7 +280,7 @@ def on_study_press(p):
 def play_mode():
     game = [random.randint(0, 1) for _ in range(5)]
 #     print(game) # answer
-    sleep(1)
+    time.sleep(1)
     for i in game:
         if i == 0:
             look_left()
@@ -172,7 +328,8 @@ def play_mode():
 # set buttons to handler
 decision_pin.irq(trigger=Pin.IRQ_FALLING, handler=on_decision_press) # falling = when pin goes from 1 -> 0
 study_pin.irq(trigger=Pin.IRQ_FALLING, handler=on_study_press) # falling = when pin goes from 1 -> 0
-    
+
+
 while True:
 #     if decision_flag:
 #         decision_flag = False
@@ -195,16 +352,3 @@ while True:
         study_mode()
     
     time.sleep_ms(10)
-    
-
-
-    
-
-
-
-
-
-
-
-
-
