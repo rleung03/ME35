@@ -1,0 +1,6 @@
+SSID = "tufts_eecs" #use tufts_eecs
+PASSWORD = "foundedin1883" #foundedin1883
+
+REFRESH_TOKEN = "AQC9KRR8lRnymAtb9B-xYcNRvsJp7CQkYM8O3ORH5gtrc7fmAt90IXEZ9pzHyqmVr372O1gzCa142awmVUWPQc3Sc4khj-cM-seme78bJ3SdvpvjaW5D5Vlpajqk7Em-sKA"
+CLIENT_ID = "d16be22740a045d990ed54c5e5120865"
+CLIENT_SECRET = "a94c2ede117f4d07a8066a8c
